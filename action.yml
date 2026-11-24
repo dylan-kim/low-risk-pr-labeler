@@ -1,5 +1,5 @@
 name: Low-risk PR labeler
-description: Labels pull requests that are small, avoid risky paths (DB migrations, BPMN) and come from authors with merged PRs in the repo.
+description: Labels small, low-risk PRs (no DB migrations or BPMN, experienced author) for quick review.
 author: dylan-kim
 branding:
   icon: check-circle
