@@ -40,6 +40,7 @@ jobs:
         #   ignored_globs: |
         #     **/package-lock.json
         #   label: low-risk
+        #   label_color: "0E8A16"
 ```
 
 ## Inputs
@@ -51,6 +52,7 @@ jobs:
 | `risky_globs` | Flyway migrations and BPMN files (see above) |
 | `ignored_globs` | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `gradle.lockfile`, `**/generated/**` |
 | `label` | `low-risk` |
+| `label_color` | `0E8A16` (green). Only used when the action creates the label; an existing label keeps its colour |
 | `github-token` | `${{ github.token }}` |
 
 Setting `risky_globs` or `ignored_globs` replaces the defaults instead of adding to them. Globs support `**`, `*` and `?`.

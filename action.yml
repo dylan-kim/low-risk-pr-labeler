@@ -21,6 +21,9 @@ inputs:
   label:
     description: Label to add or remove. Default low-risk.
     required: false
+  label_color:
+    description: Hex colour used only when the action creates the label (an existing label keeps its colour). Default 0E8A16 (green).
+    required: false
   github-token:
     description: Token with pull-requests write access.
     required: false
@@ -36,6 +39,7 @@ runs:
         RISKY_GLOBS: ${{ inputs.risky_globs }}
         IGNORED_GLOBS: ${{ inputs.ignored_globs }}
         LABEL: ${{ inputs.label }}
+        LABEL_COLOR: ${{ inputs.label_color }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
@@ -87,6 +91,13 @@ runs:
           const ok = fails.length === 0;
           const issue = { owner, repo, issue_number: pr.number };
           if (ok) {
+            // Create the label with our colour if the repo doesn't have it yet; never recolour an existing one.
+            await github.rest.issues.getLabel({ owner, repo, name: label }).catch(async e => {
+              if (e.status !== 404) throw e;
+              const color = (env.LABEL_COLOR || '0E8A16').replace(/^#/, '');
+              await github.rest.issues.createLabel({ owner, repo, name: label, color, description: 'Small, safe PR: quick review' })
+                .catch(e => { if (e.status !== 422) throw e; }); // 422: a parallel run created it first
+            });
             await github.rest.issues.addLabels({ ...issue, labels: [label] });
           } else {
             await github.rest.issues.removeLabel({ ...issue, name: label }).catch(e => { if (e.status !== 404) throw e; });
