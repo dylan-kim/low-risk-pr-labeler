@@ -1,0 +1,98 @@
+name: Low-risk PR labeler
+description: Labels pull requests that are small, avoid risky paths (DB migrations, BPMN) and come from authors with merged PRs in the repo.
+author: dylan-kim
+branding:
+  icon: check-circle
+  color: green
+
+inputs:
+  max_lines:
+    description: Change size (additions + deletions, ignored files excluded) must be below this. Default 1000.
+    required: false
+  min_merged_prs:
+    description: Merged PRs the author needs in this repo. Default 3.
+    required: false
+  risky_globs:
+    description: Newline-separated globs; touching any rules the PR out. Default Flyway migrations and BPMN files.
+    required: false
+  ignored_globs:
+    description: Newline-separated globs left out of the change size. Default common lockfiles and **/generated/**.
+    required: false
+  label:
+    description: Label to add or remove. Default low-risk.
+    required: false
+  github-token:
+    description: Token with pull-requests write access.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@v7
+      env:
+        MAX_LINES: ${{ inputs.max_lines }}
+        MIN_MERGED_PRS: ${{ inputs.min_merged_prs }}
+        RISKY_GLOBS: ${{ inputs.risky_globs }}
+        IGNORED_GLOBS: ${{ inputs.ignored_globs }}
+        LABEL: ${{ inputs.label }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const env = process.env;
+          const list = (v, d) => (v || d).split('\n').map(s => s.trim()).filter(Boolean);
+          // ponytail: tiny glob -> regex (** / * / ?), no braces or char classes; swap for minimatch if globs get fancy
+          const toRe = g => new RegExp('^' + g
+            .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+            .replace(/\*\*\/|\*\*|\*|\?/g, m => ({ '**/': '(?:.*/)?', '**': '.*', '*': '[^/]*', '?': '[^/]' })[m]) + '$');
+          const anyMatch = (res, p) => res.some(re => re.test(p));
+
+          const maxLines = Number(env.MAX_LINES || 1000);
+          const minPrs = Number(env.MIN_MERGED_PRS || 3);
+          const label = env.LABEL || 'low-risk';
+          const risky = list(env.RISKY_GLOBS, [
+            '**/db/migration/**', '**/V*__*.sql', '**/R__*.sql',   // Flyway
+            '**/*.bpmn', '**/*.bpmn20.xml',                        // Flowable BPMN
+          ].join('\n')).map(toRe);
+          const ignored = list(env.IGNORED_GLOBS, [
+            '**/package-lock.json', '**/yarn.lock', '**/pnpm-lock.yaml', '**/gradle.lockfile', '**/generated/**',
+          ].join('\n')).map(toRe);
+
+          const pr = context.payload.pull_request;
+          if (!pr) return core.setFailed('Run this action on pull_request events.');
+          const { owner, repo } = context.repo;
+          const fails = [];
+
+          if (pr.draft) fails.push('PR is a draft');
+
+          let merged = 0;
+          if (pr.user.type === 'Bot') {
+            fails.push(`author \`${pr.user.login}\` is a bot`);
+          } else {
+            // This PR is still open, so it is never part of the count.
+            const q = `repo:${owner}/${repo} is:pr is:merged author:${pr.user.login}`;
+            merged = (await github.rest.search.issuesAndPullRequests({ q, per_page: 1 })).data.total_count;
+            if (merged < minPrs) fails.push(`author has ${merged} merged PRs in this repo (needs ${minPrs})`);
+          }
+
+          const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 });
+          let size = 0;
+          for (const f of files) {
+            const hit = [f.filename, f.previous_filename].find(p => p && anyMatch(risky, p));
+            if (hit) fails.push(`risky change: \`${hit}\``);
+            if (!anyMatch(ignored, f.filename)) size += f.changes;
+          }
+          if (size >= maxLines) fails.push(`change size ${size} (must be below ${maxLines})`);
+
+          const ok = fails.length === 0;
+          const issue = { owner, repo, issue_number: pr.number };
+          if (ok) {
+            await github.rest.issues.addLabels({ ...issue, labels: [label] });
+          } else {
+            await github.rest.issues.removeLabel({ ...issue, name: label }).catch(e => { if (e.status !== 404) throw e; });
+          }
+
+          await core.summary
+            .addHeading(ok ? `✅ Low-risk PR` : `❌ Not low-risk`, 3)
+            .addList(ok ? [`change size ${size}`, `author has ${merged} merged PRs in this repo`] : fails)
+            .write();
